@@ -1,0 +1,80 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-10-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+mat1 <- as.matrix(read.csv("result_mat_1.csv", header = FALSE))
+mat1 = mat1[,c(5,1,2,3,4,6)]
+mat2 <- as.matrix(read.csv("result_mat_2.csv", header = FALSE))
+mat3 <- as.matrix(read.csv("result_mat_3.csv", header = FALSE))
+mat4 <- as.matrix(read.csv("result_mat_4.csv", header = FALSE))
+mat5 <- as.matrix(read.csv("result_mat_5.csv", header = FALSE))
+mat6 <- as.matrix(read.csv("result_mat_6.csv", header = FALSE))
+
+result_pat_First_Half <- mat1 + mat2 + mat3 + mat4 + mat5 + mat6
+```
+
+```{r}
+write.csv(result_pat_First_Half, "result_pat_First_Half.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+mat1 <- as.matrix(read.csv("result_mat_7.csv", header = FALSE))
+mat2 <- as.matrix(read.csv("result_mat_8.csv", header = FALSE))
+mat3 <- as.matrix(read.csv("result_mat_9.csv", header = FALSE))
+mat4 <- as.matrix(read.csv("result_mat_10.csv", header = FALSE))
+mat5 <- as.matrix(read.csv("result_mat_11.csv", header = FALSE))
+mat6 <- as.matrix(read.csv("result_mat_12.csv", header = FALSE))
+
+result_pat_Second_Half <- mat1 + mat2 + mat3 + mat4 + mat5 + mat6
+```
+
+```{r}
+write.csv(result_pat_Second_Half, "result_pat_Second_Half.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

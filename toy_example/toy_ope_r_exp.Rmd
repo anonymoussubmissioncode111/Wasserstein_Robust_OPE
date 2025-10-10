@@ -1,0 +1,318 @@
+---
+title: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(ggplot2)
+Sys.setenv(RETICULATE_PYTHON = "python.exe") # Python path
+library(reticulate)
+library(ClusterR)
+source_python("sac_policy.py")
+Rcpp::sourceCpp("robust_ope_opl.cpp")
+source("toy_env.R")
+```
+
+
+
+# ope for toy env
+
+
+
+
+
+
+```{r}
+delta_list =c(0, 0.2, 0.4, 0.6, 0.8, 1) # wass radii
+```
+
+
+```{r}
+set.seed(1234)
+num_simu = 10
+wass_result = matrix(NA, nrow = num_simu, ncol = length(delta_list))
+tv_result = matrix(NA, nrow = num_simu, ncol = length(delta_list))
+
+for (kk in 1:num_simu) {
+    
+    set.seed(kk)
+    data = data_generation(env.reset = toy.reset,
+                         env.step = toy.step, 
+                         policy = toy.random_policy,
+                         num_episodes = 200,
+                         max_episode_len = 100)  # data generation
+    
+    St = as.matrix(data$St)
+    At = as.vector(data$At)
+    Rt = as.vector(data$Rt)
+    Sn = as.matrix(data$Sn)
+    episode_lengths = data$episode_lengths
+    S0 = as.matrix(data$S0) 
+  
+    
+    # deterministic policy
+    policy_vec = apply(data$St, 1, FUN = function(x) sac_policy(x))
+      
+
+    n_clusters = 50 # number of classes
+    km2 <- KMeans_rcpp(
+      St,
+      clusters    = n_clusters,
+      num_init    = 1,            # k-means clustering
+      max_iters   = 300,
+      initializer = "kmeans++"
+    )   
+
+    
+    estimated_model = estimate_abstract_model_kmeans(St, Sn, At, Rt, policy_vec, km2$centroids, km2$clusters)
+    D = as.matrix(dist(km2$centroids, method = "euclidean"))   
+    
+    for (i in 1:length(delta_list)) {
+      
+      wass_constraints = rep(delta_list[i], n_clusters)
+      
+      V_wass = robust_ope_wass(estimated_model$P, estimated_model$R, estimated_model$policy, delta = wass_constraints, 
+                           D, gamma=0.95, p=1, tol=1e-3,max_iter=1000)$V_robust
+        
+      tv_constraints = rep(1, n_clusters)
+      V_tv = robust_ope_tv(estimated_model$P, estimated_model$R, estimated_model$policy, delta = tv_constraints, 
+                            gamma=0.95, tol=1e-3,max_iter=1000)$V_robust
+      
+      
+      
+      
+      index = assign_to_clusters(S0, km2$centroids)
+
+      wass_result[kk, i] = mean(V_wass[index])
+      tv_result[kk, i] = mean(V_tv[index])
+  
+    }    
+}
+
+```
+
+
+
+```{r}
+# save to csv file
+write.csv(wass_result, file = "wass_result.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+write.csv(tv_result, file = "tv_result.csv")
+```
+
+
+
+# approximate true values
+
+```{r}
+
+map_fun_toy = function(s,a){
+  
+  if(a == 0){
+    return(c(max(0,s-0.2), min(5, s+1)))
+  } else{
+    return(c(max(0,0.2*s-0.02), min(5, s+0.5)))
+  }
+  
+}
+
+reward_fun_toy = function(s,a){
+  return((26-s^2-(a==1))/26)
+}
+
+abs_model <- function(map_fun = map_fun_toy, reward_fun = reward_fun_toy, L = 0, U = 5, n = 200, renorm = TRUE) {
+  h <- (U - L) / n
+  left  <- L + (0:(n-1)) * h
+  right <- left + h
+  mids  <- (left + right) / 2
+
+  
+  overlap_all <- function(a, b) {
+    if (a > b) { tmp <- a; a <- b; b <- tmp }
+    if (b == a) {
+    
+      j <- min(n, max(1, floor((a - L) / h) + 1))
+      v <- numeric(n); v[j] <- 1.0
+      return(v)  
+    }
+    pmax(0, pmin(b, right) - pmax(a, left)) / (b - a)
+  }
+
+  P <- array(0, dim = c(n,2,n), dimnames = NULL)
+  R = matrix(0,nrow = n, ncol = 2)
+  policy = numeric(n)
+  for (i in seq_len(n)) {
+    ab <- map_fun(mids[i],0)
+    a <- ab[1]; b <- ab[2]
+    row <- overlap_all(a, b)
+
+
+    if (renorm) {
+      s <- sum(row)
+      if (s > 0) row <- row / s
+    }
+    P[i,1, ] <- row
+   
+    R[i,1] <- reward_fun(mids[i],0)
+    
+    
+
+    
+    ab <- map_fun(mids[i],1)
+    a <- ab[1]; b <- ab[2]
+    row <- overlap_all(a, b)
+
+
+    if (renorm) {
+      s <- sum(row)
+      if (s > 0) row <- row / s
+    }
+    P[i,2, ] <- row
+   
+    R[i,2] <- reward_fun(mids[i],1)
+
+    
+    
+    policy[i] = sac_policy(mids[i])
+    
+  }
+
+  list(P = P, R= R, policy = policy)
+}
+
+
+
+
+
+```
+
+
+
+
+
+```{r}
+abs_model = abs_model()
+
+est_value_abs = numeric(length(delta_list))
+
+D_abs = as.matrix(dist(seq(0.0125,4.9875, by = 0.025), method = "euclidean"))   
+for (j in 1:length(delta_list)) {
+  wass_constraints_abs = rep(delta_list[j], 200)
+  res_abs = robust_ope_wass(abs_model$P, abs_model$R, abs_model$policy, delta = wass_constraints_abs, 
+                           D_abs, gamma=0.95, p=1, tol=1e-3,max_iter=1000)$V_robust
+
+      est_value_abs[j] = mean(res_abs)
+}
+```
+
+
+```{r}
+# save the approximate true policy values
+write.csv(est_value_abs,file = "est_value_abs.csv")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

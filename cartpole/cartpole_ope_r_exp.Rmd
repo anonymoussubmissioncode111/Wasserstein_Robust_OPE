@@ -1,0 +1,177 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+Sys.setenv(RETICULATE_PYTHON = "python.exe") # python path
+library(reticulate)
+library(ClusterR)
+source_python("sac_policy.py")
+library(ggplot2)
+library(reticulate)
+library(ClusterR)
+Rcpp::sourceCpp("robust_ope_opl.cpp")
+source("env_custom_cartpole.R")
+source("simu_functions.R")
+```
+
+
+# scale
+```{r}
+set.seed(1)
+init_data = data_generation(env.reset = custom_cartpole.reset,
+                           env.step = custom_cartpole.step, 
+                           policy = custom_cartpole.random_policy,
+                           num_episodes = 500,
+                           max_episode_len = 100)
+
+init_St = as.matrix(init_data$St)
+init_St_scale = scale(init_St, center = TRUE, scale = TRUE)
+center0 = attr(init_St_scale,"scaled:center")
+scale0 = attr(init_St_scale,"scaled:scale")
+```
+
+
+
+
+# distances
+
+```{r}
+prob_list = c(0,0.2,0.4,0.6, 0.8,1)
+tv_list = prob_list/2
+
+
+```
+
+```{r}
+para1 = 20/(0.5*(4/3-1/11))
+para2 = 20/1.1+0.05/1.1*para1
+thetaacc_diff = (para1*0.02 - center0[4])/scale0[4]
+xacc_diff = (para2*0.02 - center0[2])/scale0[2]
+```
+
+```{r}
+dist0 = sqrt(thetaacc_diff^2+xacc_diff^2)
+wass_list = dist0*0.5*prob_list
+```
+
+
+
+# ORL Experiment
+
+
+```{r}
+greedy_sac = function(s){
+  
+  r_sample = runif(1, 0, 1)
+  if(r_sample<= 0.3){
+    return(sac_policy(s))
+  } else return(sample(0:1,1))
+  
+}
+```
+
+
+
+```{r}
+simu_time = 10
+wass_result = matrix(0,nrow = simu_time,ncol = 6)
+tv_result = matrix(0,nrow = simu_time,ncol = 6)
+```
+
+
+```{r}
+set.seed(3456)
+for (i in 1:simu_time) {
+  data = data_generation(env.reset = custom_cartpole.reset,
+                             env.step = custom_cartpole.step, 
+                             policy = greedy_sac,
+                             num_episodes = 300,
+                             max_episode_len = 200)
+  St = as.matrix(data$St)
+  At = as.vector(data$At)
+  Rt = as.vector(data$Rt)
+  Sn = as.matrix(data$Sn)
+  episode_lengths = data$episode_lengths
+  S0 = as.matrix(data$S0) 
+  
+  policy_vec = apply(data$St, 1, FUN = function(x) sac_policy(x))
+  
+  St_scale = (St- center0)/scale0
+  Sn_scale = (Sn- center0)/scale0
+  
+  n_clusters = 155
+  km2 <- KMeans_rcpp(
+    St_scale,
+    clusters    = n_clusters,
+    num_init    = 1,          
+    max_iters   = 300,
+    initializer = "kmeans++"
+  )
+
+  
+  estimated_model = estimate_abstract_model_kmeans(St_scale, Sn_scale, At, Rt, policy_vec, km2$centroids, km2$clusters)
+  D = as.matrix(dist(km2$centroids, method = "euclidean"))    
+  
+  
+  for (kkk in 1:6) {
+
+         
+      
+      wass_constraints = rep(wass_list[kkk], n_clusters)
+      tv_constraints = rep(tv_list[kkk], n_clusters)
+      
+      wass = robust_ope_wass(estimated_model$P, estimated_model$R, estimated_model$policy, delta = wass_constraints, 
+                           D, gamma=0.95, p=1, tol=1e-3,max_iter=1000)
+      
+      V_wass = wass$V_robust
+        
+      tv = robust_ope_tv(estimated_model$P, estimated_model$R, estimated_model$policy, delta = tv_constraints, 
+                            gamma=0.95, tol=1e-3,max_iter=1000)
+      
+      V_tv = tv$V_robust
+      
+      S0_scale = (S0- center0)/scale0
+      
+      index = assign_to_clusters(S0_scale, km2$centroids)
+      
+      wass_result[i, kkk] = mean(V_wass[index])
+      tv_result[i, kkk] = mean(V_tv[index])
+    
+  }
+
+  print(i)
+}
+
+```
+
+
+
+```{r}
+write.csv(wass_result, file = "wass_result_greedy.csv", row.names = FALSE)
+```
+
+
+```{r}
+write.csv(tv_result, file = "tv_result_greedy.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

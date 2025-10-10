@@ -1,0 +1,475 @@
+---
+title: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+
+Sys.setenv(RETICULATE_PYTHON = "python.exe") #python path
+library(reticulate)
+library(ClusterR)
+source_python("sac_policy.py")
+```
+
+
+```{r}
+library(data.table)
+library(ClusterR)
+Rcpp::sourceCpp("robust_ope_opl.cpp")
+library(transport)
+```
+
+
+
+
+```{r}
+
+build_transitions_from_csv <- function(path,
+                                       episode_len = 48,
+                                       state_cols = c(4,5,7),
+                                       action_col = 6,
+                                       reward_col = 4,
+                                       standardize_reward = TRUE) {
+  dt <- fread(path)
+  n  <- nrow(dt)
+
+
+  states <- as.matrix(dt[, ..state_cols, drop = FALSE])
+
+  states[, 3] <- ifelse(states[, 3] == 0, 0, 1)
+
+
+  actions_raw <- dt[[action_col]]
+  At_full <- ifelse(actions_raw == 0, 0L, 1L)
+
+
+  s1 <- as.numeric(dt[[reward_col]])
+  Rt_full <- -(((s1 > 140) * abs(s1 - 140)^1.1 +
+                (s1 < 80)  * (s1 - 80)^2) / 30.0)
+  if (standardize_reward) {
+    Rt_full <- (Rt_full +40.833332)/40.833332
+  }
+
+
+  terminals <- integer(n)
+  terminals[seq(episode_len, by = episode_len, length.out = ceiling(n / episode_len))] <- 1L
+  terminals <- terminals[seq_len(n)]  
+
+
+  keep <- which((seq_len(n) %% episode_len) != 0)
+
+  St <- states[keep, , drop = FALSE]
+  Sn <- states[keep + 1L, , drop = FALSE]
+  At <- At_full[keep]
+  Rt <- Rt_full[keep]
+
+
+  S0 <- states[seq(1, by = episode_len, length.out = ceiling(n / episode_len)), , drop = FALSE]
+  S0 <- S0[seq_len(nrow(S0)), , drop = FALSE]  
+
+  list(
+    St = St,
+    Sn = Sn,
+    At = At,
+    Rt = Rt,
+    S0 = S0
+  )
+}
+```
+
+
+
+```{r}
+base_dir <- "./Data"
+
+patients <- paste0("pat", 1:6, ".csv")
+
+all_data <- lapply(patients, function(fname) {
+  path <- file.path(base_dir, fname)
+  build_transitions_from_csv(path, episode_len = 48)
+})
+
+names(all_data) <- paste0("pat", 1:6)
+```
+
+
+
+
+
+
+```{r}
+St_all <- do.call(rbind, lapply(all_data, function(x) x$St))
+Sn_all <- do.call(rbind, lapply(all_data, function(x) x$Sn))
+At_all <- unlist(lapply(all_data, function(x) x$At), use.names = FALSE)
+Rt_all <- unlist(lapply(all_data, function(x) x$Rt), use.names = FALSE)
+S0_all <- do.call(rbind, lapply(all_data, function(x) x$S0))
+```
+
+
+
+```{r}
+St_all_cont = St_all[,1:2]
+St_all_binary = St_all[,3]
+
+Sn_all_cont = Sn_all[,1:2]
+Sn_all_binary = Sn_all[,3]
+```
+
+
+
+
+
+```{r}
+St_mins <- apply(St_all_cont, 2, min)
+St_maxs <- apply(St_all_cont, 2, max)
+
+
+St_all_cont_minmax <- sweep(St_all_cont, 2, St_mins, "-")
+St_all_cont_scale <- sweep(St_all_cont_minmax, 2, (St_maxs - St_mins), "/")
+Sn_all_cont_minmax <- sweep(Sn_all_cont, 2, St_mins, "-")
+Sn_all_cont_scale <- sweep(Sn_all_cont_minmax, 2, (St_maxs - St_mins), "/")
+```
+
+```{r}
+policies <- list(
+  sac_policy_pat1,
+  sac_policy_pat2,
+  sac_policy_pat3,
+  sac_policy_pat4,
+  sac_policy_pat5,
+  sac_policy_pat6
+)
+
+```
+
+
+
+```{r}
+compute_hybrid_distances <- function(centroids_0, centroids_1, lambda = 0.3) {
+
+  if (is.null(dim(centroids_0))) centroids_0 <- matrix(centroids_0, nrow = 0)
+  if (is.null(dim(centroids_1))) centroids_1 <- matrix(centroids_1, nrow = 0)
+
+  if (ncol(centroids_0) != ncol(centroids_1)) {
+    stop("centroids_0, centroids_1 should have same cols")
+  }
+  if (nrow(centroids_0) + nrow(centroids_1) == 0) {
+    stop("K0 + K1 cannot be 0")
+  }
+  if (!is.numeric(lambda) || length(lambda) != 1L || !is.finite(lambda)) {
+    stop("lambda must be numeric and finite")
+  }
+
+  K0 <- nrow(centroids_0)
+  K1 <- nrow(centroids_1)
+  K  <- K0 + K1
+
+  C <- rbind(centroids_0, centroids_1)
+  b <- c(rep(0L, K0), rep(1L, K1))
+
+
+  D_euclid <- as.matrix(stats::dist(C, method = "euclidean"))
+
+ 
+  B_diff   <- outer(b, b, FUN = function(x, y) as.numeric(x != y))
+  D <- D_euclid + lambda * B_diff
+
+
+
+  return(D)
+}
+
+```
+
+
+
+
+
+
+
+
+
+```{r}
+
+lambda = 0.3
+n_clusters_0_list = c(3,15,3,5,5,19)
+n_clusters_1_list = c(2,8,2,3,3,5)
+```
+
+
+```{r}
+original_est = numeric(6)
+tv_lower = numeric(6)
+wass_lower = numeric(6)
+```
+
+
+
+
+```{r}
+for (iter in 1:6) {
+  set.seed(123)
+  
+  n_clusters_0 = n_clusters_0_list[iter]
+  n_clusters_1 = n_clusters_1_list[iter]
+  n_clusters = n_clusters_0+n_clusters_1
+
+  km2_0 <- KMeans_rcpp(
+    St_all_cont_scale[St_all_binary==0,],
+    clusters    = n_clusters_0,
+    num_init    = 2,          
+    max_iters   = 300,
+    initializer = "kmeans++"
+  )
+  
+  km2_1 <- KMeans_rcpp(
+    St_all_cont_scale[St_all_binary==1,],
+    clusters    = n_clusters_1,
+    num_init    = 2,         
+    max_iters   = 300,
+    initializer = "kmeans++"
+  )
+  
+  
+  estimated_model_all = estimate_abstract_model_kmeans_hybrid(St_all_cont_scale,St_all_binary, Sn_all_cont_scale,Sn_all_binary, At_all, 
+                                                       Rt_all, pi_prob = rep(1,nrow(St_all_cont_scale)), 
+                                                       km2_0$centroids, km2_1$centroids, km2_0$clusters,km2_1$clusters) 
+  
+  
+  D_all = compute_hybrid_distances(km2_0$centroids, km2_1$centroids, lambda = lambda)
+  
+  estimated_pat_model_list <- list()
+  
+  tttt = 1
+  for (nm in names(all_data)) {
+    x <- all_data[[nm]]
+    
+ 
+    St_cont_minmax <- sweep(x$St[,1:2], 2, St_mins, "-")
+    St_cont_scale <- sweep(St_cont_minmax, 2, (St_maxs - St_mins), "/")
+    St_binary = x$St[,3]
+    Sn_cont_minmax <- sweep(x$Sn[,1:2], 2, St_mins, "-")
+    Sn_cont_scale <- sweep(Sn_cont_minmax, 2, (St_maxs - St_mins), "/")
+    Sn_binary = x$Sn[,3]
+    
+    policy_vec =  apply(x$St, 1, FUN = function(x) policies[[tttt]](x))
+    
+    res <- estimate_abstract_model_kmeans_hybrid_with_reference(St_cont_scale,St_binary, Sn_cont_scale,Sn_binary, x$At, 
+                                                       x$Rt, pi_prob = policy_vec, 
+                                                       km2_0$centroids, km2_1$centroids, km2_0$clusters,km2_1$clusters,
+                                                       P0_ref = as.matrix(estimated_model_all$P[,1,]),
+                                                       P1_ref = as.matrix(estimated_model_all$P[,2,]),
+                                                       R0_ref = estimated_model_all$R[,1],
+                                                       R1_ref = estimated_model_all$R[,2]
+                                                       )
+    
+  
+    
+    estimated_pat_model_list[[nm]] <- res
+    
+    
+    tttt = tttt+1
+  }
+  
+  
+  
+  arr_wass <- array(0, dim = c(6, n_clusters))
+  arr_tv <- array(0, dim = c(6, n_clusters))
+  
+
+  
+  for (i in c(iter)) {
+    for (j in c(1:6)) {
+      p_i_0 = estimated_pat_model_list[[i]]$P[,1,]
+      p_i_1 = estimated_pat_model_list[[i]]$P[,2,]
+      p_j_0 = estimated_pat_model_list[[j]]$P[,1,]
+      p_j_1 = estimated_pat_model_list[[j]]$P[,2,]
+      for (kkk in 1:n_clusters) {
+        
+        arr_wass[j,kkk] = max(wasserstein(a = p_i_0[kkk, ], b = p_j_0[kkk, ], p = 1, 
+                                            ground_p = 1, costm = D_all),
+            wasserstein(a = p_i_1[kkk, ], b = p_j_1[kkk, ], p = 1, ground_p = 1, costm = D_all))
+        arr_tv[j,kkk] = max(0.5 * sum(abs(p_i_0[kkk, ]- p_j_0[kkk, ])),
+                              0.5 * sum(abs(p_i_1[kkk, ]- p_j_1[kkk, ])))
+        
+      }
+      
+      
+    }
+  }  
+  
+  tv_max <- apply(arr_tv, 2, max)
+  wass_max <- apply(arr_wass, 2, max)
+  
+
+  
+  
+  x <- all_data[[iter]]
+  estimated_model = estimated_pat_model_list[[iter]]
+  wass_regular_fit = robust_ope_wass(estimated_model$P, estimated_model$R, 
+                                     estimated_model$policy, delta = rep(0, n_clusters), 
+                           D_all, gamma=0.9, p=1, tol=1e-3,max_iter=1000)$V_robust
+  
+  wass_low_fit = robust_ope_wass(estimated_model$P, estimated_model$R, 
+                                     estimated_model$policy, delta = wass_max, 
+                           D_all, gamma=0.9, p=1, tol=1e-3,max_iter=1000)$V_robust
+  
+    
+  tv_low_fit = robust_ope_tv(estimated_model$P, estimated_model$R, 
+                             estimated_model$policy, delta = tv_max, 
+                            gamma=0.9, tol=1e-3,max_iter=1000)$V_robust
+
+  
+  S0_cont_minmax <- sweep(x$S0[,1:2], 2, St_mins, "-")
+  S0_cont_scale <- sweep(S0_cont_minmax, 2, (St_maxs - St_mins), "/")
+  index = assign_to_clusters_hybrid(S0_cont_scale, x$S0[,3], km2_0$centroids,km2_1$centroids)
+  
+  
+  
+  original_est[iter] = mean(wass_regular_fit[index])
+  wass_lower[iter] = mean(wass_low_fit[index])
+  tv_lower[iter] = mean(tv_low_fit[index])
+  
+  
+  
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+result_matrix <- as.matrix(read.csv("./OPE_Results/result_pat_First_Half.csv",header = TRUE))
+
+ope_est = diag(result_matrix)
+```
+
+
+
+
+
+```{r}
+pat_labels <- paste0("pat", 1:6)
+x_factor   <- factor(pat_labels, levels = pat_labels, ordered = TRUE)
+
+make_line_df <- function(vec, name) {
+  data.frame(
+    pat   = x_factor,
+    value = as.numeric(vec),
+    series = name,
+    stringsAsFactors = FALSE
+  )
+}
+
+line_df <- rbind(
+  make_line_df(original_est, "original_est"),
+  make_line_df(tv_lower,     "tv_lower"),
+  make_line_df(wass_lower,   "wass_lower"),
+  make_line_df(ope_est,      "ope_est")
+)
+
+stopifnot(ncol(result_matrix) == 6)
+n_runs <- nrow(result_matrix)
+points_df <- data.frame(
+  pat   = rep(x_factor, each = n_runs),
+  value = as.numeric(t(result_matrix)),  
+  src   = factor("FQE estimates")      
+)
+
+
+line_series_levels <- c("original_est","tv_lower","wass_lower","ope_est")
+line_colors <- c(
+  "original_est" = "#1f77b4",  
+  "tv_lower"     = "#98df8a",  
+  "wass_lower"   = "#ff9896",  
+  "ope_est"      = "#9467bd"  
+)
+
+line_df$series <- factor(line_df$series, levels = line_series_levels)
+
+p <- ggplot() +
+  geom_line(
+    data = line_df,
+    aes(x = pat, y = value, color = series, group = series),
+    linewidth = 1.1
+  ) +
+  geom_point(
+    data = line_df,
+    aes(x = pat, y = value, color = series),
+    size = 1.8
+  ) +
+  geom_point(
+    data = points_df,
+    aes(x = pat, y = value, shape = src),
+    size = 1.6,
+    alpha = 0.75
+  ) +
+  scale_color_manual(
+    name = NULL,
+    values = line_colors,
+    breaks = line_series_levels,
+    labels = c("Abstraction_Est","TV_Lower","Wass_Lower","OPE_Est")
+  ) +
+  scale_shape_manual(
+    name  = NULL,
+    values = c("FQE estimates" = 16) 
+  ) +
+  labs(
+    x = "Patients",
+    y = "Value"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x  = element_text(angle = 0, vjust = 0.5),
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+
+print(p)
+```
+
+
+```{r}
+ggsave("ohiodm_ope_plot_cohort1.png", plot = p, width = 6, height = 4, dpi = 300)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
