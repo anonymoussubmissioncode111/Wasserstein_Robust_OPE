@@ -191,8 +191,8 @@ compute_hybrid_distances <- function(centroids_0, centroids_1, lambda = 0.3) {
 ```{r}
 
 lambda = 0.3
-n_clusters_0_list = c(3,15,10,13,12,12)
-n_clusters_1_list = c(2, 8, 3, 10, 3, 7)
+n_clusters_0_list = rep(12,6)
+n_clusters_1_list = rep(7,6)
 ```
 
 ```{r}
@@ -438,8 +438,15 @@ print(p)
 
 
 ```{r}
-ggsave("ohiodm_ope_plot_cohort2.png", plot = p, width = 6, height = 4, dpi = 300)
+ggsave(
+  filename = "ohiodm_ope_plot_cohort2.pdf",
+  plot = p,
+  width = 6.75,
+  height = 4.25,
+  units = "in"
+)
 ```
+
 
 
 
