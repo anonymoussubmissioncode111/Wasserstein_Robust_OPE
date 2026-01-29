@@ -30,6 +30,7 @@ source("toy_env.R")
 
 ```{r}
 delta_list =c(0, 0.2, 0.4, 0.6, 0.8, 1) # wass radii
+tv_dist_list = c(0,1,1,1,1,1)  # tv radii
 ```
 
 
@@ -80,7 +81,7 @@ for (kk in 1:num_simu) {
       V_wass = robust_ope_wass(estimated_model$P, estimated_model$R, estimated_model$policy, delta = wass_constraints, 
                            D, gamma=0.95, p=1, tol=1e-3,max_iter=1000)$V_robust
         
-      tv_constraints = rep(1, n_clusters)
+      tv_constraints = rep(delta_list[i], n_clusters)
       V_tv = robust_ope_tv(estimated_model$P, estimated_model$R, estimated_model$policy, delta = tv_constraints, 
                             gamma=0.95, tol=1e-3,max_iter=1000)$V_robust
       
@@ -220,6 +221,7 @@ for (j in 1:length(delta_list)) {
 # save the approximate true policy values
 write.csv(est_value_abs,file = "est_value_abs.csv")
 ```
+
 
 
 
